@@ -631,8 +631,8 @@ const BROKER = 'wss://broker.hivemq.com:8884/mqtt';
 const TOPIC_PFX = 'cotalk/';
 const PROFILE_STORAGE_KEY = 'profile';
 const MESSAGE_GROUP_WINDOW = 90_000;
-const PRESENCE_PING_INTERVAL = 25_000;
-const PRESENCE_TIMEOUT = 70_000;
+const PRESENCE_PING_INTERVAL = 15_000;
+const PRESENCE_TIMEOUT = 45_000;
 const MAX_ROOM_LENGTH = 10;
 const MAX_NAME_LENGTH = 18;
 const MAX_MESSAGE_LENGTH = 1000;
@@ -894,12 +894,11 @@ function setEmptyStateVisible(visible) {
 function restoreProfile() {
   const profile = readProfile();
   const savedName = sanitizeName(profile.name);
-  const savedCid = normalizeClientId(profile.cid);
   const savedColor = safeColor(profile.color, '');
 
   if (savedName) dom.inpName.value = savedName;
   state.me.name = savedName;
-  state.me.cid = savedCid;
+  state.me.cid = '';
   state.me.color = savedColor;
 }
 
@@ -975,7 +974,7 @@ function joinChat() {
 
   const room = sanitizeRoom(dom.inpRoom.value) || sanitizeRoom(uid(6));
   const profile = readProfile();
-  const cid = normalizeClientId(profile.cid) || `u_${uid(12)}`;
+  const cid = `u_${uid(12)}`;
   const color = safeColor(profile.color, '') || avColor(name);
 
   state.me = { name, cid, color };
@@ -983,7 +982,6 @@ function joinChat() {
 
   writeProfile({
     name: state.me.name,
-    cid: state.me.cid,
     color: state.me.color,
   });
 
@@ -1053,15 +1051,26 @@ function closeClientSoon() {
 function connectMQTT() {
   setConnectionState('connecting', '接続中…');
 
+  const topic = TOPIC_PFX + state.room;
   state.client = mqtt.connect(BROKER, {
     clientId: state.me.cid,
     clean: true,
     connectTimeout: 12000,
     reconnectPeriod: 4000,
     keepalive: 30,
+    will: {
+      topic,
+      payload: JSON.stringify({
+        type: 'leave',
+        cid: state.me.cid,
+        user: state.me.name,
+        ts: Date.now(),
+        reason: 'unexpected_disconnect',
+      }),
+      qos: 0,
+      retain: false,
+    },
   });
-
-  const topic = TOPIC_PFX + state.room;
 
   state.client.on('connect', () => {
     setConnectionState('online', 'オンライン');
