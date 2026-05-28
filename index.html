@@ -631,6 +631,8 @@ const BROKER = 'wss://broker.hivemq.com:8884/mqtt';
 const TOPIC_PFX = 'cotalk/';
 const PROFILE_STORAGE_KEY = 'profile';
 const MESSAGE_GROUP_WINDOW = 90_000;
+const PRESENCE_PING_INTERVAL = 25_000;
+const PRESENCE_TIMEOUT = 70_000;
 const MAX_ROOM_LENGTH = 10;
 const MAX_NAME_LENGTH = 18;
 const MAX_MESSAGE_LENGTH = 1000;
@@ -650,6 +652,8 @@ const state = {
   room: '',
   members: new Map(),
   lastGroup: { cid: null, el: null, ts: 0 },
+  heartbeatTimer: null,
+  presenceTimer: null,
   userScrolled: false,
 };
 
@@ -756,6 +760,49 @@ function isSafeHexColor(value) {
 
 function safeColor(value, fallback) {
   return isSafeHexColor(value) ? value : fallback;
+}
+
+function rememberMember(cid, user, color, ts = Date.now()) {
+  if (!cid) return;
+  state.members.set(cid, {
+    name: user || 'unknown',
+    color: color || avColor(user || 'unknown'),
+    lastSeen: Number.isFinite(Number(ts)) ? Number(ts) : Date.now(),
+  });
+}
+
+function startPresenceLoop() {
+  stopPresenceLoop();
+  state.heartbeatTimer = setInterval(() => {
+    if (state.client?.connected) {
+      publishPacket({ type: 'here', user: state.me.name, color: state.me.color });
+    }
+  }, PRESENCE_PING_INTERVAL);
+  state.presenceTimer = setInterval(pruneStaleMembers, 10_000);
+}
+
+function stopPresenceLoop() {
+  if (state.heartbeatTimer) {
+    clearInterval(state.heartbeatTimer);
+    state.heartbeatTimer = null;
+  }
+  if (state.presenceTimer) {
+    clearInterval(state.presenceTimer);
+    state.presenceTimer = null;
+  }
+}
+
+function pruneStaleMembers() {
+  const now = Date.now();
+  let changed = false;
+  for (const [cid, member] of state.members.entries()) {
+    if (cid === state.me.cid) continue;
+    if ((Number(member.lastSeen) || 0) && now - Number(member.lastSeen) > PRESENCE_TIMEOUT) {
+      state.members.delete(cid);
+      changed = true;
+    }
+  }
+  if (changed) renderMembers();
 }
 
 function uid(length = 10) {
@@ -901,6 +948,7 @@ function bindEvents() {
 
   dom.messages.addEventListener('scroll', handleMessageScroll);
   window.addEventListener('beforeunload', handleBeforeUnload);
+  window.addEventListener('pagehide', handleBeforeUnload);
 }
 
 function init() {
@@ -965,6 +1013,7 @@ function leaveChat() {
     publishPacket({ type: 'leave', user: state.me.name });
   }
 
+  stopPresenceLoop();
   closeClientSoon();
   resetMessages();
   state.members.clear();
@@ -1018,6 +1067,7 @@ function connectMQTT() {
     setConnectionState('online', 'オンライン');
     state.client.subscribe(topic, { qos: 0 });
     publishPacket({ type: 'join', user: state.me.name, color: state.me.color });
+    startPresenceLoop();
     appendSystemMessage(`${state.me.name} として参加しました`, 'join');
     toast(`${state.room} に参加しました 🎉`);
     setComposerEnabled(true);
@@ -1040,6 +1090,7 @@ function connectMQTT() {
   });
 
   state.client.on('close', () => {
+    stopPresenceLoop();
     if (state.client) {
       setConnectionState('error', '切断');
       setComposerEnabled(false);
@@ -1087,10 +1138,7 @@ function normalizePacket(raw) {
 
 function handlePacket(packet) {
   if (packet.type === 'join') {
-    state.members.set(packet.cid, {
-      name: packet.user || 'unknown',
-      color: packet.color || avColor(packet.user || 'unknown'),
-    });
+    rememberMember(packet.cid, packet.user, packet.color, packet.ts);
     renderMembers();
     appendSystemMessage(`${packet.user || 'unknown'} が参加しました`, 'join');
     publishPacket({ type: 'here', user: state.me.name, color: state.me.color });
@@ -1098,10 +1146,7 @@ function handlePacket(packet) {
   }
 
   if (packet.type === 'here') {
-    state.members.set(packet.cid, {
-      name: packet.user || 'unknown',
-      color: packet.color || avColor(packet.user || 'unknown'),
-    });
+    rememberMember(packet.cid, packet.user, packet.color, packet.ts);
     renderMembers();
     return;
   }
@@ -1114,6 +1159,7 @@ function handlePacket(packet) {
   }
 
   if (packet.type === 'msg') {
+    rememberMember(packet.cid, packet.user, packet.color, packet.ts);
     appendMessage({
       cid: packet.cid,
       user: packet.user || 'unknown',
@@ -1296,6 +1342,7 @@ function handleBeforeUnload() {
       // Ignore shutdown issues.
     }
   }
+  stopPresenceLoop();
 }
 
 /* ═══════════════════════════════════════════
