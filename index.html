@@ -1002,6 +1002,14 @@ function closeClientSoon() {
 function connectMQTT() {
   setConnectionState('connecting', '接続中…');
 
+  const topic = TOPIC_PFX + state.room;
+  const willPayload = JSON.stringify({
+    type: 'leave',
+    user: state.me.name,
+    cid: state.me.cid,
+    ts: Date.now(),
+  });
+
   state.client = mqtt.connect(BROKER, {
     clientId: state.me.cid,
     clean: true,
@@ -1009,13 +1017,8 @@ function connectMQTT() {
     reconnectPeriod: 4000,
     keepalive: 30,
     will: {
-      topic: TOPIC_PFX + state.room,
-      payload: JSON.stringify({
-        type: 'leave',
-        user: state.me.name,
-        cid: state.me.cid,
-        ts: Date.now(),
-      }),
+      topic,
+      payload: willPayload,
       qos: 0,
       retain: false,
     },
